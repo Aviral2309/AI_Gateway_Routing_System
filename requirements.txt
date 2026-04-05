@@ -1,0 +1,19 @@
+fastapi
+uvicorn[standard]
+httpx
+pydantic
+pydantic-settings
+scikit-learn
+numpy
+python-dotenv
+structlog
+pytest
+pytest-asyncio
+
+# Database
+asyncpg
+sqlalchemy[asyncio]
+psycopg2-binary
+
+# Cache
+redis[hiredis]
