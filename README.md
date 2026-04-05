@@ -1,4 +1,4 @@
-# Nexus LLM Router
+# AI Gateway Routing system
 
 > An intelligent multi-LLM orchestration gateway that routes queries to the optimal model using ML-based classification, a multi-agent execution pipeline, Redis caching, and PostgreSQL-backed analytics — reducing inference cost while maintaining response quality.
 
@@ -11,10 +11,10 @@ Every LLM application has the same hidden inefficiency: every query, regardless 
 **Nexus solves this.** It classifies every query before touching any LLM, routes it to the cheapest model that can handle it well, caches repeated answers, and for genuinely complex queries — decomposes them into sub-tasks that run in parallel across different models. The result: lower cost, faster responses, and better answers for hard problems.
 
 ```
-Simple query  → Gemini Flash    → answer in 400ms   → $0.000003
-Medium query  → Gemini Flash    → answer in 800ms   → $0.000021
-Complex query → Agent Pipeline  → 3 tasks in 1.2s  → $0.00012
-Same query x2 → Redis Cache     → answer in 0ms     → $0.000000
+Simple query  → Gemini Flash    → answer in 400ms   
+Medium query  → Gemini Flash    → answer in 800ms   
+Complex query → Agent Pipeline  → 3 tasks in 1.2s 
+Same query x2 → Redis Cache     → answer in 0ms    
 ```
 
 ---
@@ -51,7 +51,7 @@ Same query x2 → Redis Cache     → answer in 0ms     → $0.000000
                               ┌──────────┴──────────┐
                               ▼                     ▼
                          Gemini Flash          Ollama (local)
-                         Gemini Pro            codellama / llama3
+                    Gemini flash lite          codellama / llama3.1:8b
 ```
 
 ---
@@ -192,7 +192,7 @@ curl -X POST http://localhost:8000/chat \
 ```json
 {
   "content": "The capital of France is Paris.",
-  "model_used": "gemini-1.5-flash",
+  "model_used": "gemini-2.5-flash",
   "from_cache": false,
   "was_decomposed": false,
   "tier": "simple",
@@ -212,7 +212,7 @@ curl -X POST http://localhost:8000/chat \
 ```json
 {
   "content": "The capital of France is Paris.",
-  "model_used": "gemini-1.5-flash[cached]",
+  "model_used": "gemini-2.5-flash[cached]",
   "from_cache": true,
   "latency_ms": 0.0,
   "cost_usd": 0.0
@@ -534,6 +534,6 @@ The script pulls logged queries from PostgreSQL, weights training examples by qu
 
 ---
 
-## License
+## Author
 
-MIT
+Aviral Mittal
