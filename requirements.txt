@@ -9,6 +9,7 @@ python-dotenv
 structlog
 pytest
 pytest-asyncio
+google-generativeai
 
 # Database
 asyncpg
