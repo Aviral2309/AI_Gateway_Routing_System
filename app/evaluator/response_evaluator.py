@@ -51,7 +51,7 @@ class ResponseEvaluator:
             parsed = self._parse(raw)
             return EvaluationResult(
                 score=parsed["score"], reason=parsed["reason"],
-                evaluator_model="gemini-1.5-flash", latency_ms=round(latency_ms, 1),
+                evaluator_model=settings.gemini_lite_model, latency_ms=round(latency_ms, 1),
             )
         except Exception as e:
             logger.warning(f"LLM eval failed: {e} — using heuristic")
@@ -78,7 +78,7 @@ class ResponseEvaluator:
         )
 
     async def _call_gemini(self, prompt: str) -> str:
-        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_lite_model}:generateContent"
         payload = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.1, "maxOutputTokens": 120},

@@ -6,7 +6,7 @@ import time
 
 @dataclass
 class Message:
-    role: str       # user | assistant | system
+    role: str    # user | assistant | system
     content: str
 
 
@@ -48,7 +48,7 @@ class BaseLLM(ABC):
     @abstractmethod
     async def health_check(self) -> bool: ...
 
-    def _make_error_response(self, error: str, latency_ms: float = 0.0) -> LLMResponse:
+    def _err(self, error: str, latency_ms: float = 0.0) -> LLMResponse:
         return LLMResponse(
             content="", model_id=self.model_id,
             input_tokens=0, output_tokens=0,

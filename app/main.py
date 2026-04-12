@@ -1,5 +1,5 @@
 """
-Nexus LLM Router — Main Application
+LLM Router — FastAPI Application
 """
 import logging
 import uuid
@@ -27,37 +27,43 @@ router_instance: Optional[LLMRouter] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global router_instance
-    logger.info("=== Nexus LLM Router starting ===")
+    logger.info("=== LLM Router starting ===")
 
+    # DB — optional, graceful fallback
     try:
         from app.db.session import init_db
         await init_db()
-        logger.info("PostgreSQL: tables ready")
+        logger.info("PostgreSQL: connected")
     except Exception as e:
-        logger.warning(f"PostgreSQL unavailable: {e} — memory fallback active")
+        logger.warning(f"PostgreSQL unavailable ({e}) — using in-memory fallback")
 
+    # Redis — optional, graceful fallback
     await cache.connect()
 
+    # Router — always starts, even if no models are reachable
     router_instance = LLMRouter()
-    logger.info("Router + Agents initialized")
+    logger.info("=== LLM Router ready ===")
     yield
-
     await cache.disconnect()
     logger.info("Shutdown complete")
 
 
 app = FastAPI(
-    title="Nexus LLM Router",
-    description="Intelligent multi-LLM orchestration with ML classification, Redis caching, PostgreSQL analytics, and Agentic AI pipeline.",
+    title="LLM Router",
+    description="ML-powered multi-LLM orchestration with Gemini 2.5 + Ollama, "
+                "Redis caching, PostgreSQL analytics, and Agentic AI pipeline.",
     version=settings.app_version,
     lifespan=lifespan,
 )
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+)
 app.add_middleware(RateLimitMiddleware)
 
 
-# ─── Schemas ─────────────────────────────────────────────────────────────────
+# ── Schemas ───────────────────────────────────────────────────────────────────
 
 class ChatMessage(BaseModel):
     role: str
@@ -65,14 +71,14 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    query: str                  = Field(..., min_length=1, max_length=8000)
-    history: List[ChatMessage]  = Field(default_factory=list)
-    system_prompt: Optional[str]= None
-    session_id: Optional[str]   = None
-    strategy: RoutingStrategy   = RoutingStrategy.BALANCED
-    temperature: float          = Field(default=0.7, ge=0.0, le=1.0)
-    max_tokens: int             = Field(default=1024, ge=1, le=4096)
-    use_agents: Optional[bool]  = None   # None = auto (complex → agents)
+    query: str               = Field(..., min_length=1, max_length=8000)
+    history: List[ChatMessage] = Field(default_factory=list)
+    system_prompt: Optional[str] = None
+    session_id: Optional[str]    = None
+    strategy: RoutingStrategy    = RoutingStrategy.BALANCED
+    temperature: float           = Field(default=0.7, ge=0.0, le=1.0)
+    max_tokens: int              = Field(default=1024, ge=1, le=4096)
+    use_agents: Optional[bool]   = None
 
 
 class ClassifyRequest(BaseModel):
@@ -86,57 +92,48 @@ class ChatResponse(BaseModel):
     session_id: str
     from_cache: bool
     was_decomposed: bool
-
     tier: str
     intent: str
     complexity_score: float
     classification_confidence: float
-
     routing_strategy: str
     routing_reason: str
-
     latency_ms: float
     cost_usd: float
     total_tokens: int
     attempts: int
-
     quality_score: Optional[float]
     quality_reason: Optional[str]
-
     success: bool
     error: Optional[str]
-
     agent_steps: Optional[list]
 
 
-# ─── Endpoints ───────────────────────────────────────────────────────────────
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    """
-    Main endpoint. Routes query through full pipeline:
-    classify → cache → route → (agents if complex) → evaluate → store.
-    """
+    """Main endpoint — classify → cache → route → execute → evaluate → store."""
     session_id = req.session_id or str(uuid.uuid4())
     history    = [Message(role=m.role, content=m.content) for m in req.history]
 
-    result = await router_instance.route(
-        query=req.query, history=history, system_prompt=req.system_prompt,
-        strategy=req.strategy, session_id=session_id,
-        temperature=req.temperature, max_tokens=req.max_tokens,
-        use_agents=req.use_agents,
-    )
-
-    agent_steps = None
-    if result.agent_trace:
-        agent_steps = result.agent_trace.steps
+    try:
+        result = await router_instance.route(
+            query=req.query, history=history,
+            system_prompt=req.system_prompt, strategy=req.strategy,
+            session_id=session_id, temperature=req.temperature,
+            max_tokens=req.max_tokens, use_agents=req.use_agents,
+        )
+    except Exception as e:
+        logger.error(f"Router crashed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
     return ChatResponse(
         content=result.content,
         model_used=result.model_used,
         session_id=session_id,
         from_cache=result.from_cache,
-        was_decomposed=result.agent_trace.was_decomposed if result.agent_trace else False,
+        was_decomposed=bool(result.agent_trace and result.agent_trace.was_decomposed),
         tier=result.classification.tier,
         intent=result.classification.intent,
         complexity_score=result.classification.complexity_score,
@@ -151,19 +148,19 @@ async def chat(req: ChatRequest):
         quality_reason=result.evaluation.reason if result.evaluation else None,
         success=result.success,
         error=result.error,
-        agent_steps=agent_steps,
+        agent_steps=result.agent_trace.steps if result.agent_trace else None,
     )
 
 
 @app.post("/classify")
 async def classify(req: ClassifyRequest):
-    """Classify a query without calling any LLM — for debugging routing logic."""
+    """Classify a query (no LLM call) — for debugging routing logic."""
     r = router_instance.classifier.classify(req.query, req.context_turns)
     return {
         "tier":             r.tier,
         "intent":           r.intent,
-        "complexity_score": r.complexity_score,
-        "confidence":       r.confidence,
+        "complexity_score": round(r.complexity_score, 4),
+        "confidence":       round(r.confidence, 3),
         "reasoning":        r.reasoning,
         "will_use_agents":  r.tier == "complex" and settings.enable_agents,
         "features": {
@@ -179,28 +176,23 @@ async def classify(req: ClassifyRequest):
 
 
 @app.get("/metrics")
-async def metrics(source: str = Query(default="auto", description="auto | db | memory")):
-    """
-    Analytics. source=db returns full PostgreSQL history.
-    source=memory returns current-session in-memory stats (always fast).
-    """
+async def metrics(source: str = Query(default="auto")):
+    """Analytics. source=db for PostgreSQL history, source=memory for current session."""
     if source == "db":
         data = await router_instance.tracker.get_metrics_db()
     elif source == "memory":
         data = router_instance.tracker.get_metrics()
     else:
         data = await router_instance.tracker.get_metrics_db()
-
     return {
-        "metrics":  data,
-        "cache":    await cache.get_stats(),
-        "recent":   router_instance.tracker.get_recent(20),
+        "metrics": data,
+        "cache":   await cache.get_stats(),
+        "recent":  router_instance.tracker.get_recent(20),
     }
 
 
 @app.get("/analytics/cost")
 async def cost_analytics(hours: int = Query(default=24, ge=1, le=168)):
-    """Hourly cost breakdown for the last N hours (from PostgreSQL)."""
     try:
         from app.db.session import get_db
         from app.db.repository import RequestRepository
@@ -213,7 +205,6 @@ async def cost_analytics(hours: int = Query(default=24, ge=1, le=168)):
 
 @app.get("/analytics/requests")
 async def request_log(limit: int = Query(default=20, ge=1, le=100)):
-    """Recent request log from PostgreSQL."""
     try:
         from app.db.session import get_db
         from app.db.repository import RequestRepository
@@ -221,20 +212,13 @@ async def request_log(limit: int = Query(default=20, ge=1, le=100)):
             logs = await RequestRepository(db).recent(limit)
         return {"requests": [
             {
-                "id":            log.id,
-                "session_id":    log.session_id,
-                "tier":          log.tier,
-                "intent":        log.intent,
-                "model_used":    log.model_used,
-                "latency_ms":    log.latency_ms,
-                "cost_usd":      log.cost_usd,
-                "quality_score": log.quality_score,
-                "success":       log.success,
-                "from_cache":    log.from_cache,
-                "was_decomposed": log.was_decomposed,
-                "agent_steps":   log.agent_steps,
-                "created_at":    str(log.created_at),
-                "query":         log.query[:100],
+                "id": log.id, "session_id": log.session_id,
+                "tier": log.tier, "intent": log.intent,
+                "model_used": log.model_used, "latency_ms": log.latency_ms,
+                "cost_usd": log.cost_usd, "quality_score": log.quality_score,
+                "success": log.success, "from_cache": log.from_cache,
+                "was_decomposed": log.was_decomposed, "agent_steps": log.agent_steps,
+                "created_at": str(log.created_at), "query": log.query[:100],
             }
             for log in logs
         ]}
@@ -251,7 +235,7 @@ async def health():
             ok = await model.health_check()
             model_health[mid] = "ok" if ok else "unreachable"
         except Exception as e:
-            model_health[mid] = f"error: {str(e)[:50]}"
+            model_health[mid] = f"error: {str(e)[:40]}"
 
     db_ok = False
     try:
@@ -272,19 +256,19 @@ async def health():
         "redis":      "ok" if redis_ok else "unavailable (memory fallback active)",
         "agents":     "enabled" if settings.enable_agents else "disabled",
         "config": {
-            "version":               settings.app_version,
-            "budget_per_session":    f"${settings.default_budget_usd}",
-            "cache_ttl":             f"{settings.cache_ttl_seconds}s",
-            "rate_limit":            f"{settings.rate_limit_requests} req/{settings.rate_limit_window_seconds}s",
-            "evaluation":            settings.enable_evaluation,
-            "agent_max_steps":       settings.agent_max_steps,
+            "version":        settings.app_version,
+            "budget":         f"${settings.default_budget_usd}/session",
+            "cache_ttl":      f"{settings.cache_ttl_seconds}s",
+            "rate_limit":     f"{settings.rate_limit_requests} req/{settings.rate_limit_window_seconds}s",
+            "evaluation":     settings.enable_evaluation,
+            "agents":         settings.enable_agents,
         },
     }
 
 
 @app.get("/models")
 async def list_models():
-    """List all registered LLM adapters and their current health."""
+    """Registered models with live health status."""
     result = []
     for mid, model in router_instance._models.items():
         ok = await model.health_check()
@@ -297,8 +281,19 @@ async def list_models():
     return {"models": result}
 
 
+@app.get("/models/ollama")
+async def ollama_models():
+    """List all models available in local Ollama."""
+    for mid, model in router_instance._models.items():
+        if "ollama" in mid:
+            from app.models.ollama_model import OllamaModel
+            if isinstance(model, OllamaModel):
+                models = await model.list_models()
+                return {"models": models, "default": settings.ollama_default_model}
+    return {"models": [], "default": settings.ollama_default_model}
+
+
 @app.delete("/cache")
 async def clear_cache():
-    """Flush all Redis cached responses."""
     await cache.flush()
-    return {"message": "Cache cleared"}
+    return {"message": "Cache flushed"}
